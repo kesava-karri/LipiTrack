@@ -1,8 +1,9 @@
-from typing import List
 from datetime import date, timedelta
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from typing import List
 
 from database import engine, Base, get_db
 import models
@@ -11,6 +12,20 @@ import schemas
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+
+# To allow local dev frontend (Vite) calls to the backend
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -111,7 +126,7 @@ def list_daily_habits(user_id: int, db: Session = Depends(get_db)):
     return results
 
 
-@app.get("/users/{user_id}/summary/")
+@app.get("/users/{user_id}/summary/", response_model=schemas.UserSummary)
 def user_summary(user_id: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:

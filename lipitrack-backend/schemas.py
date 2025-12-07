@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from datetime import date, datetime
-from typing import Optional
+from typing import List, Optional
 
 
 class UserBase(BaseModel):
@@ -63,3 +63,17 @@ class DailyHabitRead(DailyHabitBase):
 
     class Config:
         orm_mode = True
+
+
+class SummaryLast30Days(BaseModel):
+    avg_diet_score: Optional[float] = None
+    avg_exercise_minutes: Optional[float] = None
+    avg_sleep_hours: Optional[float] = None
+    entries_count: int
+
+
+class UserSummary(BaseModel):
+    user_id: int
+    latest_lab: Optional[LabResultRead] = None
+    trend_last5: List[LabResultRead] = []
+    last_30_days: SummaryLast30Days

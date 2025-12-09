@@ -77,3 +77,17 @@ class UserSummary(BaseModel):
     latest_lab: Optional[LabResultRead] = None
     trend_last5: List[LabResultRead] = []
     last_30_days: SummaryLast30Days
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class TokenData(BaseModel):
+    user_id: int | None = None
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str

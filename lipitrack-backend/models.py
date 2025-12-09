@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Date, Float, Text, ForeignKey, D
 from sqlalchemy.orm import relationship
 
 from database import Base
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class User(Base):
@@ -28,7 +28,7 @@ class LabResult(Base):
     non_hdl = Column(Float, nullable=True)
 
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     user = relationship("User", backref="lab_results")
 
@@ -47,6 +47,6 @@ class DailyHabit(Base):
     alcohol = Column(Boolean, nullable=True)
 
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     user = relationship("User", backref="daily_habits")

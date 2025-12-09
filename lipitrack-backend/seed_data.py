@@ -1,9 +1,9 @@
-# seed_data.py
 import random
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
-from database import SessionLocal, engine, Base
 import models
+from database import SessionLocal, engine, Base
+from auth_utils import hash_password
 
 # Ensure tables exist
 Base.metadata.create_all(bind=engine)
@@ -15,7 +15,7 @@ def create_demo_user(db):
     if user:
         return user
     user = models.User(email="demo@example.com",
-                       hashed_password="demo123", full_name="Demo User")
+                       hashed_password=hash_password("demo123"), full_name="Demo User")
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -43,7 +43,7 @@ def random_lab_results(db, user, months=12, points=8):
             triglycerides=triglycerides,
             non_hdl=non_hdl,
             notes="Auto-seeded",
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         db.add(lr)
         results.append(lr)

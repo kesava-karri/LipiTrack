@@ -1,17 +1,21 @@
 from datetime import date, timedelta
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import Depends, Form, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
 
-from database import engine, Base, get_db
 import models
 import schemas
+from auth_utils import hash_password, verify_password, create_access_token
+from database import engine, Base, get_db
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # To allow local dev frontend (Vite) calls to the backend
 origins = [
@@ -28,12 +32,61 @@ app.add_middleware(
 )
 
 
+async def get_current_user(
+        token: str = Depends(oauth2_scheme),
+        db: Session = Depends(get_db),
+):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        sub = payload.get("sub")
+        if sub is None:
+            raise credentials_exception
+        token_data = TokenData(user_id=int(sub))
+    except (JWTError, ValueError):
+        raise credentials_exception
+
+    user = db.query(models.User).filter(
+        models.User.id == token_data.user_id).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+
 @app.get("/health")
 def health_check():
     return {
         "status": "ok",
         "message": "LipiTrack backend is running"
     }
+
+
+@app.post("/auth/login", response_model=schemas.Token)
+def login(
+    payload: schemas.LoginRequest,
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(
+        models.User.email == payload.email).first()
+    if not user or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # create JWT with user id in "sub"
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/users/me", response_model=schemas.UserRead)
+async def read_users_me(current_user: models.User = Depends(get_current_user)):
+    return current_user
 
 
 @app.post("/users/", response_model=schemas.UserRead, status_code=status.HTTP_201_CREATED)
@@ -46,10 +99,9 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
             detail="Email already registered",
         )
 
-    # TODO: hash password properly later
     new_user = models.User(
         email=user.email,
-        hashed_password=user.password,  # placeholder
+        hashed_password=hash_password(user.password),
         full_name=user.full_name,
     )
     db.add(new_user)
@@ -66,16 +118,18 @@ def list_users(db: Session = Depends(get_db)):
 
 
 @app.post("/lab-results/", response_model=schemas.LabResultRead, status_code=status.HTTP_201_CREATED)
-def create_lab_result(user_id: int, payload: schemas.LabResultCreate, db: Session = Depends(get_db)):
-    # In real app, we'd use current user, for now we accept user_id param
-    # TODO: Validate the user after implementing auth
-
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+def create_lab_result(
+    payload: schemas.LabResultCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    user = db.query(models.User).filter(
+        models.User.id == current_user.id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     lr = models.LabResult(
-        user_id=user_id,
+        user_id=current_user.id,
         test_date=payload.test_date,
         total_cholesterol=payload.total_cholesterol,
         ldl=payload.ldl,
@@ -98,13 +152,18 @@ def list_lab_results(user_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/daily-habits/", response_model=schemas.DailyHabitRead, status_code=status.HTTP_201_CREATED)
-def create_daily_habit(user_id: int, payload: schemas.DailyHabitCreate, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+def create_daily_habit(
+    payload: schemas.DailyHabitCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(
+        models.User.id == current_user.id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     dh = models.DailyHabit(
-        user_id=user_id,
+        user_id=current_user.id,
         entry_date=payload.entry_date,
         sleep_hours=payload.sleep_hours,
         exercise_minutes=payload.exercise_minutes,
@@ -120,16 +179,30 @@ def create_daily_habit(user_id: int, payload: schemas.DailyHabitCreate, db: Sess
 
 
 @app.get("/users/{user_id}/daily_habits/", response_model=List[schemas.DailyHabitRead])
-def list_daily_habits(user_id: int, db: Session = Depends(get_db)):
+def list_daily_habits(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     results = db.query(models.DailyHabit).filter(
-        models.DailyHabit.user_id == user_id).order_by(models.DailyHabit.entry_date.desc()).all()
+        models.DailyHabit.user_id == current_user.id).order_by(models.DailyHabit.entry_date.desc()).all()
     return results
+
+
+@app.get("/me/summary/", response_model=schemas.UserSummary)
+def my_summary(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    return build_user_summary(db, current_user.id)
 
 
 @app.get("/users/{user_id}/summary/", response_model=schemas.UserSummary)
 def user_summary(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
+    return build_user_summary(db, user_id)
+
+
+def build_user_summary(db: Session, user_id: int) -> schemas.UserSummary:
+    if not user_id:
         raise HTTPException(status_code=404, detail="User not found")
 
     # 1) Latest lab result (by test_date)
@@ -178,4 +251,4 @@ def user_summary(user_id: int, db: Session = Depends(get_db)):
         },
     }
 
-    return summary
+    return schemas.UserSummary(summary)

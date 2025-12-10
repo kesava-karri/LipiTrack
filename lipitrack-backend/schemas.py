@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from datetime import date, datetime
 from typing import List, Optional
 
@@ -15,8 +15,7 @@ class UserCreate(UserBase):
 class UserRead(UserBase):
     id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LabResultBase(BaseModel):
@@ -38,8 +37,7 @@ class LabResultRead(LabResultBase):
     user_id: int
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DailyHabitBase(BaseModel):
@@ -61,8 +59,7 @@ class DailyHabitRead(DailyHabitBase):
     user_id: int
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SummaryLast30Days(BaseModel):
@@ -75,8 +72,10 @@ class SummaryLast30Days(BaseModel):
 class UserSummary(BaseModel):
     user_id: int
     latest_lab: Optional[LabResultRead] = None
-    trend_last5: List[LabResultRead] = []
+    trend_last5: List[LabResultRead] = Field(default_factory=list)
     last_30_days: SummaryLast30Days
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Token(BaseModel):

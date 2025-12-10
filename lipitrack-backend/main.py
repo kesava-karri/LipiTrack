@@ -1,7 +1,7 @@
 from datetime import date, timedelta
-from fastapi import Depends, Form, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -9,13 +9,13 @@ from typing import List
 
 import models
 import schemas
-from auth_utils import hash_password, verify_password, create_access_token
+from auth_utils import hash_password, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 from database import engine, Base, get_db
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+auth_scheme = HTTPBearer()
 
 # To allow local dev frontend (Vite) calls to the backend
 origins = [
@@ -33,27 +33,30 @@ app.add_middleware(
 
 
 async def get_current_user(
-        token: str = Depends(oauth2_scheme),
+        credentials: HTTPAuthorizationCredentials = Depends(auth_scheme),
         db: Session = Depends(get_db),
 ):
+    token = credentials.credentials
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"}
     )
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         sub = payload.get("sub")
         if sub is None:
             raise credentials_exception
-        token_data = TokenData(user_id=int(sub))
+        user_id = int(sub)
     except (JWTError, ValueError):
         raise credentials_exception
 
     user = db.query(models.User).filter(
-        models.User.id == token_data.user_id).first()
+        models.User.id == user_id).first()
     if user is None:
         raise credentials_exception
+
     return user
 
 
@@ -123,11 +126,6 @@ def create_lab_result(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    user = db.query(models.User).filter(
-        models.User.id == current_user.id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
     lr = models.LabResult(
         user_id=current_user.id,
         test_date=payload.test_date,
@@ -144,10 +142,25 @@ def create_lab_result(
     return lr
 
 
+# TODO: We'll make it admin only/deprecate later
 @app.get("/users/{user_id}/lab-results", response_model=List[schemas.LabResultRead])
 def list_lab_results(user_id: int, db: Session = Depends(get_db)):
     results = db.query(models.LabResult).filter(
         models.LabResult.user_id == user_id).order_by(models.LabResult.test_date.desc()).all()
+    return results
+
+
+@app.get("/me/lab-results", response_model=List[schemas.LabResultRead])
+def list_my_lab_results(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    results = (
+        db.query(models.LabResult)
+        .filter(models.LabResult.user_id == current_user.id)
+        .order_by(models.LabResult.test_date.desc())
+        .all()
+    )
     return results
 
 
@@ -157,11 +170,6 @@ def create_daily_habit(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    user = db.query(models.User).filter(
-        models.User.id == current_user.id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
     dh = models.DailyHabit(
         user_id=current_user.id,
         entry_date=payload.entry_date,
@@ -178,13 +186,28 @@ def create_daily_habit(
     return dh
 
 
-@app.get("/users/{user_id}/daily_habits/", response_model=List[schemas.DailyHabitRead])
+# TODO: We'll make it admin only/deprecate later
+@app.get("/users/{user_id}/daily-habits/", response_model=List[schemas.DailyHabitRead])
 def list_daily_habits(
-    current_user: models.User = Depends(get_current_user),
+    user_id: int,
     db: Session = Depends(get_db)
 ):
     results = db.query(models.DailyHabit).filter(
-        models.DailyHabit.user_id == current_user.id).order_by(models.DailyHabit.entry_date.desc()).all()
+        models.DailyHabit.user_id == user_id).order_by(models.DailyHabit.entry_date.desc()).all()
+    return results
+
+
+@app.get("/me/daily-habits", response_model=List[schemas.DailyHabitRead])
+def list_my_daily_habits(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    results = (
+        db.query(models.DailyHabit)
+        .filter(models.DailyHabit.user_id == current_user.id)
+        .order_by(models.DailyHabit.entry_date.desc())
+        .all()
+    )
     return results
 
 
@@ -213,6 +236,11 @@ def build_user_summary(db: Session, user_id: int) -> schemas.UserSummary:
         .first()
     )
 
+    latest_lab = (
+        schemas.LabResultRead.model_validate(latest)
+        if latest is not None else None
+    )
+
     # 2) Last 5 lab results for trend (ordered oldest -> newest)
     last5 = (
         db.query(models.LabResult)
@@ -223,6 +251,11 @@ def build_user_summary(db: Session, user_id: int) -> schemas.UserSummary:
     )
 
     last5 = list(reversed(last5))
+
+    trend_last5 = [
+        schemas.LabResultRead.model_validate(x)
+        for x in last5
+    ]
 
     # 3) Recent habits: 30-day averages
     since = date.today() - timedelta(days=30)
@@ -239,16 +272,41 @@ def build_user_summary(db: Session, user_id: int) -> schemas.UserSummary:
         .one()
     )
 
-    summary = {
-        "user_id": user_id,
-        "latest_lab": latest,
-        "trend_last5": last5,
-        "last_30_days": {
-            "avg_diet_score": float(agg.avg_diet_score) if agg.avg_diet_score else None,
-            "avg_exercise_minutes": float(agg.avg_exercise_minutes) if agg.avg_diet_score else None,
-            "avg_sleep_hours": float(agg.avg_sleep_hours) if agg.avg_sleep_hours else None,
-            "entries_count": int(agg.entries_count),
-        },
-    }
+    last_30_days = schemas.SummaryLast30Days(
+        avg_diet_score=float(
+            agg.avg_diet_score) if agg.avg_diet_score else None,
+        avg_exercise_minutes=float(
+            agg.avg_exercise_minutes) if agg.avg_exercise_minutes else None,
+        avg_sleep_hours=float(
+            agg.avg_sleep_hours) if agg.avg_sleep_hours else None,
+        entries_count=int(agg.entries_count or 0),
+    )
 
-    return schemas.UserSummary(summary)
+    return schemas.UserSummary(
+        user_id=user_id,
+        latest_lab=latest_lab,
+        trend_last5=trend_last5,
+        last_30_days=last_30_days,
+    )
+
+
+@app.delete("/lab-results/{id}")
+def delete_lab_result(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    result = (
+        db.query(models.LabResult)
+        .filter(models.LabResult.id == id)
+        .first()
+    )
+    if not result:
+        raise HTTPException(404, "Not found")
+
+    if result.user_id != current_user.id:
+        raise HTTPException(403, "You cannot delete someone else's record")
+
+    db.delete(result)
+    db.commit()
+    return {"message": "Deleted"}
